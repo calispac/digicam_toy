@@ -36,13 +36,56 @@ def _generalized_poisson_crosstalk(crosstalk, n_photon):
 
 class NTraceGenerator:
 
-    def __init__(self,
-                 time_start=0, time_end=200, time_sampling=4, n_pixels=1296,
-                 nsb_rate=0.6, crosstalk=0.08, gain_nsb=True, n_photon=0,
-                 poisson=True, sigma_e=0.8, sigma_1=0.8, gain=5.8,
-                 baseline=200, time_signal=20, jitter=0,
-                 pulse_shape_file='/utils/pulse_SST-1M_pixel_0.dat',
-                 sub_binning=0, **kwargs):
+    def __init__(
+        self,
+        time_start=0,
+        time_end=200,
+        time_sampling=4,
+        n_pixels=1296,
+        nsb_rate=0.6,
+        crosstalk=0.08,
+        gain_nsb=True,
+        n_photon=0,
+        poisson=True,
+        sigma_e=0.8,
+        sigma_1=0.8,
+        gain=5.8,
+        baseline=200,
+        time_signal=20,
+        jitter=0,
+        pulse_shape_file='/utils/pulse_SST-1M_pixel_0.dat',
+        sub_binning=0,
+        **kwargs
+    ):
+        '''
+        time_start: scalar
+            start time of sampled waveforms (in ns?).
+
+        time_end: scalar
+            end time of sampled waveforms in the same unit as time_start.
+
+        time_sampling: scalar
+            number of samples per unit of time. or units of time per sample.
+            (digicam samples with 250MHz so a sample is 4ns long.)
+
+        sigma_e: scalar or 1-d array of shape (n_pixels, )
+            electronics noise (std-dev of normal distribution)
+            electronics noise is simulated as white noise.
+
+        jitter: scalar or 1d or 2d array of shape: ???
+            I do not know what kind of jitter is meant here, and in what
+            unit it might be given.
+
+        n_photon: sclar or 1d or 2d of shape: ???
+            the expectation value of the number of photons
+            per pixel and per event.
+            The actual number of photons per pixel and per event is drawn from
+            a poisson distribution, with the expectation value `n_photons`.
+            Even negative values are allowed.
+
+        time_signal: scalar or 1d or 2d of shape: ???
+            the time (in samples) where the cherencov signal should be simulated.
+        '''
 
         # np.random.seed(seed)
 
@@ -190,6 +233,14 @@ class NTraceGenerator:
         self.convert_to_digital()
 
     def add_signal_photon(self):
+        '''
+        set two internal variables:
+            self.cherenkov_time,
+            self.cherenkov_photon
+
+        * calculate arrival time of cherenkov-photon-bundle: time_signal + jitter
+        * calculate size of cherenkov-photon-bundle: from poisson distribution.
+        '''
 
         jitter = copy.copy(self.jitter)
         mask = jitter <= 0
@@ -197,12 +248,14 @@ class NTraceGenerator:
         jitter = np.random.uniform(0, jitter)
         jitter[mask] = 0
         self.cherenkov_time = self.time_signal + jitter
-        self.cherenkov_photon = np.random.poisson(lam=self.n_photon) if \
-            self.poisson else self.n_photon
+        self.cherenkov_photon = (
+            np.random.poisson(lam=self.n_photon)
+            if self.poisson
+            else self.n_photon
+        )
         self.cherenkov_photon[self.n_photon <= 0] = 0
 
     def generate_nsb(self):
-
         mean_nsb_pe = (self.time_end - self.time_start) * self.nsb_rate
         photon_number = np.random.poisson(lam=mean_nsb_pe)
         max_photon = np.max(photon_number)
@@ -217,10 +270,16 @@ class NTraceGenerator:
 
         else:
 
-            sub_bins = np.arange(self.time_start, self.time_end,
-                                 self.sub_binning)
-            hist = np.random.randint(0, sub_bins.shape[-1],
-                                     size=(self.n_pixels, max_photon))
+            sub_bins = np.arange(
+                self.time_start,
+                self.time_end,
+                self.sub_binning
+            )
+            hist = np.random.randint(
+                0,
+                sub_bins.shape[-1],
+                size=(self.n_pixels, max_photon)
+            )
 
         self.mask = np.arange(max_photon)
         self.mask = np.tile(self.mask, (self.n_pixels, 1))
@@ -280,8 +339,10 @@ class NTraceGenerator:
     def generate_photon_smearing(self):
 
         nsb_smearing = np.sqrt(self.nsb_photon) * self.sigma_1[:, np.newaxis]
-        cherenkov_smearing = np.sqrt(self.cherenkov_photon) * \
-                             self.sigma_1[:, np.newaxis]
+        cherenkov_smearing = (
+            np.sqrt(self.cherenkov_photon) *
+            self.sigma_1[:, np.newaxis]
+        )
 
         mask = nsb_smearing <= 0
         nsb_smearing[mask] = 1
@@ -299,19 +360,45 @@ class NTraceGenerator:
         self.cherenkov_photon += cherenkov_smearing
 
     def compute_analog_signal(self):
+        '''
+        self.sampling_bins: 1d, (n_samples,)
+        self.nsb_time: 2d, (n_pixels, some_number)
+        times: 3d, (n_pixels, some_number, n_samples)
+        self.nsb_photon: 2d, (n_pixels, 1)
+        self.mask: 1d, (maxphoton, )
+
+        I think some_number and maxphoton might be the same
+
+            * sample noise photons onto the timeline
+            * sample cherencov photons onto the timeline
+            * multiply with gain
+        '''
 
         times = self.sampling_bins - self.nsb_time[..., np.newaxis]
-        self.adc_count = self.get_pulse_shape(times) * \
-                         (self.nsb_photon * self.mask)[..., np.newaxis]
+        self.adc_count = (
+            self.get_pulse_shape(times) *
+            (self.nsb_photon * self.mask)[..., np.newaxis]
+        )
         self.adc_count = np.sum(self.adc_count, axis=1)
         times = self.sampling_bins - self.cherenkov_time[..., np.newaxis]
-        temp = self.get_pulse_shape(times) * \
-               self.cherenkov_photon[..., np.newaxis]
+        temp = (
+            self.get_pulse_shape(times) *
+            self.cherenkov_photon[..., np.newaxis]
+        )
         temp = np.sum(temp, axis=1)
         self.adc_count += temp
         self.adc_count = self.adc_count * self.gain[..., np.newaxis]
 
     def generate_electronic_smearing(self):
+        '''
+        self.sigma_e is 1d of shape: (n_pixel, )
+
+        * make sure self.sigma_e is positive
+        * convert the scalar self.sigma_e into an array of identical
+            values with shape (n_pixel, n_samples)
+        * use this as the `scale` parameter of np.random.normal
+        * add a white noise to self.adc_count
+        '''
 
         smearing_spread = np.sqrt(self.sigma_e ** 2)
         smearing_spread = np.tile(smearing_spread,
@@ -321,6 +408,11 @@ class NTraceGenerator:
         self.adc_count += smearing
 
     def convert_to_digital(self):
+        '''
+        * remove some artificial samples at the beginning
+        * add baseline
+        * and only then: digitize
+        '''
 
         n_bins_to_remove = self.artificial_backward_time // self.time_sampling
         indices_to_remove = range(0, n_bins_to_remove, 1)
